@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>خريطة تفاعلية مع حساب المسافات</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.8.0/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.8.0/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <style>
+        body { margin: 0; }
+        #map { height: 100vh; width: 100vw; }
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .controls button {
+            padding: 10px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .controls button:hover {
+            background-color: #0056b3;
+        }
+        .distance-info {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="controls">
+        <button id="locate">تحديد موقعي</button>
+        <button id="mark-location">تحديد موقع آخر</button>
+        <button id="calculate-distance">حساب المسافة عبر الطرق</button>
+        <button id="clear-route">مسح المسار</button>
+    </div>
+    <div class="distance-info" id="distance-info" style="display: none;"></div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/turf/6.5.0/turf.min.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    <script>
+        // إنشاء الخريطة باستخدام Leaflet.js
+        const map = L.map('map').setView([30.0444, 31.2357], 13); // إعداد القاهرة كنقطة مركزية
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // متغيرات لتحديد المواقع
+        let userMarker = null; // موقع المستخدم
+        let selectedMarker = null; // الموقع الذي يحدده المستخدم
+        let routingControl = null; // متغير للتحكم في مسار التوجيه
+
+        // زر تحديد موقعي
+        document.getElementById('locate').addEventListener('click', () => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition((position) => {
+                    const { latitude, longitude } = position.coords;
+
+                    // وضع علامة على موقع المستخدم
+                    if (userMarker) map.removeLayer(userMarker);
+                    userMarker = L.marker([latitude, longitude], {
+                        icon: L.icon({
+                            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
+                            iconSize: [25, 41],
+                            iconAnchor: [12, 41],
+                            popupAnchor: [1, -34]
+                        })
+                    }).addTo(map)
+                        .bindPopup('<b>موقعك الحالي</b>').openPopup();
+
+                    map.setView([latitude, longitude], 15);
+                }, (error) => {
+                    alert("خطأ في الحصول على الموقع: " + error.message);
+                });
+            } else {
+                alert("خاصية تحديد الموقع غير مدعومة في هذا المتصفح.");
+            }
+        });
+
+        // زر تحديد موقع آخر
+        document.getElementById('mark-location').addEventListener('click', () => {
+            map.once('click', (event) => {
+                const { lat, lng } = event.latlng;
+
+                // وضع دبوس في الموقع الذي يختاره المستخدم
+                if (selectedMarker) map.removeLayer(selectedMarker);
+                selectedMarker = L.marker([lat, lng], { 
+                    draggable: true,
+                    icon: L.icon({
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34]
+                    })
+                }).addTo(map)
+                    .bindPopup(`<b>الموقع المحدد</b><br>إحداثيات: ${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+
+                selectedMarker.on('dragend', (e) => {
+                    const { lat, lng } = e.target.getLatLng();
+                    selectedMarker.setPopupContent(`<b>الموقع المحدد</b><br>إحداثيات: ${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+                    
+                    // إذا كان هناك مسار، قم بتحديثه
+                    if (userMarker && routingControl) {
+                        calculateRoute();
+                    }
+                });
+            });
+        });
+
+        // زر حساب المسافة عبر الطرق
+        document.getElementById('calculate-distance').addEventListener('click', () => {
+            if (userMarker && selectedMarker) {
+                calculateRoute();
+            } else {
+                alert("يجب تحديد موقعك الحالي وموقع الوجهة أولاً.");
+            }
+        });
+
+        // زر مسح المسار
+        document.getElementById('clear-route').addEventListener('click', () => {
+            if (routingControl) {
+                map.removeControl(routingControl);
+                routingControl = null;
+            }
+            document.getElementById('distance-info').style.display = 'none';
+        });
+
+        // دالة لحساب المسار وعرضه
+        function calculateRoute() {
+            const userLatLng = userMarker.getLatLng();
+            const selectedLatLng = selectedMarker.getLatLng();
+            
+            // إزالة مسار سابق إذا كان موجوداً
+            if (routingControl) {
+                map.removeControl(routingControl);
+            }
+
+            // إنشاء مسار جديد
+            routingControl = L.Routing.control({
+                waypoints: [
+                    L.latLng(userLatLng.lat, userLatLng.lng),
+                    L.latLng(selectedLatLng.lat, selectedLatLng.lng)
+                ],
+                routeWhileDragging: true,
+                showAlternatives: false,
+                addWaypoints: false,
+                draggableWaypoints: false,
+                fitSelectedRoutes: true,
+                lineOptions: {
+                    styles: [{color: '#3388ff', opacity: 0.7, weight: 5}]
+                },
+                language: 'ar',
+                collapsible: true
+            }).addTo(map);
+
+            // عند حساب المسار، عرض المعلومات
+            routingControl.on('routesfound', function(e) {
+                const routes = e.routes;
+                const distance = routes[0].summary.totalDistance / 1000; // تحويل إلى كيلومتر
+                const time = Math.round(routes[0].summary.totalTime / 60); // تحويل إلى دقائق
+                
+                const distanceInfo = document.getElementById('distance-info');
+                distanceInfo.innerHTML = `
+                    <b>معلومات المسار:</b><br>
+                    المسافة: ${distance.toFixed(2)} كم<br>
+                    الوقت المقدر: ${time} دقيقة
+                `;
+                distanceInfo.style.display = 'block';
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>خريطة تفاعلية مع المهام</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.8.0/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.8.0/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; }
+        #map { height: 100vh; width: 100vw; }
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .controls button {
+            padding: 10px;
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .controls button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="controls">
+        <button id="locate">تحديد موقعي</button>
+        <button id="mark-location">تحديد موقع آخر</button>
+        <button id="calculate-distance">حساب المسافة</button>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/turf/6.5.0/turf.min.js"></script>
+    <script>
+        // إنشاء الخريطة باستخدام Leaflet.js
+        const map = L.map('map').setView([30.0444, 31.2357], 13); // إعداد القاهرة كنقطة مركزية
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // متغيرات لتحديد المواقع
+        let userMarker = null; // موقع المستخدم
+        let selectedMarker = null; // الموقع الذي يحدده المستخدم
+
+        // تحميل ملفات GeoJSON وعرضها
+        function addGeoJsonLayer(fileName, color) {
+            fetch(fileName)
+                .then(response => response.json())
+                .then(data => {
+                    L.geoJSON(data, {
+                        style: {
+                            color: color,
+                            weight: 2
+                        }
+                    }).addTo(map);
+                })
+                .catch(error => console.error(`حدث خطأ أثناء تحميل ملف ${fileName}:`, error));
+        }
+
+        // إضافة الطبقات الجغرافية
+        addGeoJsonLayer('roads.geojson', '#222222');      // الطرق - الرمادي الداكن
+        addGeoJsonLayer('buildings.geojson', '#ffa500');  // المباني - البرتقالي
+        addGeoJsonLayer('water.geojson', '#0000ff');      // المياه - الأزرق
+        addGeoJsonLayer('waterways.geojson', '#87ceeb');  // المجاري المائية - الأزرق الفاتح
+        addGeoJsonLayer('landuse.geojson', '#00ff00');    // الأراضي - الأخضر
+        addGeoJsonLayer('boundaries.geojson', '#ff0000'); // الحدود - الأحمر
+        addGeoJsonLayer('amenities.geojson', '#ffff00');  // الخدمات - الأصفر
+
+        // زر تحديد موقعي
+        document.getElementById('locate').addEventListener('click', () => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition((position) => {
+                    const { latitude, longitude } = position.coords;
+
+                    // وضع علامة على موقع المستخدم
+                    if (userMarker) map.removeLayer(userMarker);
+                    userMarker = L.marker([latitude, longitude]).addTo(map)
+                        .bindPopup('هذا هو موقعك الحالي').openPopup();
+
+                    map.setView([latitude, longitude], 15);
+                });
+            } else {
+                alert("خاصية تحديد الموقع غير مدعومة في هذا المتصفح.");
+            }
+        });
+
+        // زر تحديد موقع آخر
+        document.getElementById('mark-location').addEventListener('click', () => {
+            map.once('click', (event) => {
+                const { lat, lng } = event.latlng;
+
+                // وضع دبوس في الموقع الذي يختاره المستخدم
+                if (selectedMarker) map.removeLayer(selectedMarker);
+                selectedMarker = L.marker([lat, lng], { draggable: true }).addTo(map)
+                    .bindPopup(`إحداثيات الموقع: ${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+
+                selectedMarker.on('dragend', (e) => {
+                    const { lat, lng } = e.target.getLatLng();
+                    selectedMarker.setPopupContent(`إحداثيات الموقع: ${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();
+                });
+            });
+        });
+
+        // زر حساب المسافة
+        document.getElementById('calculate-distance').addEventListener('click', () => {
+            if (userMarker && selectedMarker) {
+                const userLatLng = userMarker.getLatLng();
+                const selectedLatLng = selectedMarker.getLatLng();
+
+                // استخدام Turf.js لحساب المسافة بالكيلومترات
+                const distance = turf.distance(
+                    turf.point([userLatLng.lng, userLatLng.lat]),
+                    turf.point([selectedLatLng.lng, selectedLatLng.lat]),
+                    { units: 'kilometers' }
+                );
+
+                alert(`المسافة عبر الطرق: ${distance.toFixed(2)} كيلومتر`);
+            } else {
+                alert("تأكد من تحديد الموقعين أولاً.");
+            }
+        });
+    </script>
+</body>
+</html>
