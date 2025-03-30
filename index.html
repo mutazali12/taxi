@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>خريطة تفاعلية مع ملفات GeoJSON</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.8.0/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.8.0/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #map { height: 100vh; width: 100vw; }
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+        }
+        .controls button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s;
+        }
+        .controls button:hover {
+            background-color: #45a049;
+            transform: scale(1.05);
+        }
+        .route-info {
+            position: absolute;
+            bottom: 20px;
+            right: 50%;
+            transform: translateX(50%);
+            background: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            z-index: 1000;
+            font-size: 18px;
+            text-align: center;
+            display: none;
+            border: 2px solid #4CAF50;
+        }
+        .custom-popup {
+            font-size: 16px;
+            text-align: right;
+        }
+        .icons-container {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 1000;
+            display: flex;
+            gap: 15px;
+        }
+        .icon-link {
+            background: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+            transition: all 0.3s;
+            color: #333;
+            font-size: 24px;
+            text-decoration: none;
+        }
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="controls">
+        <button id="locate">📍 تحديد موقعي</button>
+        <button id="mark-location">📌 تحديد الوجهة</button>
+        <button id="calculate-distance">🧮 حساب المسار</button>
+        <button id="clear-route">🗑️ مسح المسار</button>
+    </div>
+    <div class="route-info" id="route-info">
+        <h3>معلومات المسار</h3>
+        <p id="route-distance"></p>
+        <p id="route-time"></p>
+    </div>
+    
+    <div class="icons-container">
+        <a href="1.html" class="icon-link" title="الصفحة الأولى"><i class="fas fa-home"></i></a>
+        <a href="2.html" class="icon-link" title="الصفحة الثانية"><i class="fas fa-map-marked-alt"></i></a>
+        <a href="3.html" class="icon-link" title="الصفحة الثالثة"><i class="fas fa-info-circle"></i></a>
+    </div>
+
+    <div class="loading" id="loading">جاري تحميل البيانات...</div>
+    
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    <script>
+        // إنشاء الخريطة
+        const map = L.map('map').setView([24.7136, 46.6753], 12);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // متغيرات التطبيق
+        let userMarker = null;
+        let destinationMarker = null;
+        let routingControl = null;
+        let routeInfoPopup = null;
+        const loadingElement = document.getElementById('loading');
+
+        // أيقونات مخصصة
+        const userIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34]
+        });
+        
+        const destinationIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34]
+        });
+
+        // دالة لتحميل ملفات GeoJSON
+        function loadGeoJSONLayer(url, color) {
+            return fetch(url)
+                .then(response => {
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    return response.json();
+                })
+                .then(data => {
+                    return L.geoJSON(data, {
+                        style: { color: color, weight: 2 }
+                    }).addTo(map);
+                })
+                .catch(error => {
+                    console.error(`Error loading GeoJSON from ${url}:`, error);
+                    return null;
+                });
+        }
+
+        // تحميل جميع طبقات GeoJSON
+        async function loadAllGeoJSONLayers() {
+            try {
+                loadingElement.style.display = 'flex';
+                
+                const layers = await Promise.all([
+                    loadGeoJSONLayer('roads.geojson', '#222222'),
+                    loadGeoJSONLayer('buildings.geojson', '#ffa500'),
+                    loadGeoJSONLayer('water.geojson', '#0000ff'),
+                    loadGeoJSONLayer('waterways.geojson', '#87ceeb'),
+                    loadGeoJSONLayer('landuse.geojson', '#00ff00'),
+                    loadGeoJSONLayer('boundaries.geojson', '#ff0000'),
+                    loadGeoJSONLayer('amenities.geojson', '#ffff00')
+                ]);
+                
+                console.log('تم تحميل جميع طبقات GeoJSON بنجاح');
+            } catch (error) {
+                console.error('حدث خطأ أثناء تحميل الطبقات:', error);
+            } finally {
+                loadingElement.style.display = 'none';
+            }
+        }
+
+        // تحميل الطبقات عند بدء التشغيل
+        loadAllGeoJSONLayers();
+
+        // زر تحديد موقعي
+        document.getElementById('locate').addEventListener('click', function() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    function(position) {
+                        const { latitude, longitude } = position.coords;
+                        
+                        if (userMarker) {
+                            userMarker.setLatLng([latitude, longitude]);
+                        } else {
+                            userMarker = L.marker([latitude, longitude], {
+                                icon: userIcon,
+                                draggable: true
+                            }).addTo(map)
+                            .bindPopup('<div class="custom-popup"><b>موقعك الحالي</b></div>')
+                            .openPopup();
+                            
+                            userMarker.on('dragend', function(e) {
+                                const marker = e.target;
+                                const newPos = marker.getLatLng();
+                                if (routingControl) {
+                                    calculateRoute(newPos, destinationMarker.getLatLng());
+                                }
+                            });
+                        }
+                        
+                        map.setView([latitude, longitude], 15);
+                    },
+                    function(error) {
+                        alert('خطأ في تحديد الموقع: ' + error.message);
+                    },
+                    { enableHighAccuracy: true, timeout: 10000 }
+                );
+            } else {
+                alert('المتصفح لا يدعم خدمة تحديد الموقع');
+            }
+        });
+
+        // زر تحديد الوجهة
+        document.getElementById('mark-location').addEventListener('click', function() {
+            map.once('click', function(e) {
+                const { lat, lng } = e.latlng;
+                
+                if (destinationMarker) {
+                    destinationMarker.setLatLng([lat, lng]);
+                } else {
+                    destinationMarker = L.marker([lat, lng], {
+                        icon: destinationIcon,
+                        draggable: true
+                    }).addTo(map)
+                    .bindPopup('<div class="custom-popup"><b>موقع الوجهة</b></div>')
+                    .openPopup();
+                    
+                    destinationMarker.on('dragend', function(e) {
+                        const marker = e.target;
+                        const newPos = marker.getLatLng();
+                        if (routingControl && userMarker) {
+                            calculateRoute(userMarker.getLatLng(), newPos);
+                        }
+                    });
+                }
+            });
+        });
+
+        // زر حساب المسار
+        document.getElementById('calculate-distance').addEventListener('click', function() {
+            if (userMarker && destinationMarker) {
+                calculateRoute(userMarker.getLatLng(), destinationMarker.getLatLng());
+            } else {
+                alert('يجب تحديد موقعك وموقع الوجهة أولاً');
+            }
+        });
+
+        // زر مسح المسار
+        document.getElementById('clear-route').addEventListener('click', clearRoute);
+
+        // دالة حساب المسار
+        function calculateRoute(start, end) {
+            clearRoute();
+            
+            routingControl = L.Routing.control({
+                waypoints: [
+                    L.latLng(start.lat, start.lng),
+                    L.latLng(end.lat, end.lng)
+                ],
+                router: L.Routing.osrmv1({
+                    serviceUrl: 'https://router.project-osrm.org/route/v1',
+                    profile: 'driving'
+                }),
+                routeWhileDragging: false,
+                showAlternatives: false,
+                addWaypoints: false,
+                draggableWaypoints: false,
+                fitSelectedRoutes: true,
+                lineOptions: {
+                    styles: [{ 
+                        color: '#FF5722',
+                        opacity: 0.8,
+                        weight: 7,
+                        dashArray: '10, 10'
+                    }]
+                },
+                altLineOptions: {
+                    styles: [{ 
+                        color: '#FF5722',
+                        opacity: 0.5,
+                        weight: 5
+                    }]
+                },
+                show: false,
+                language: 'ar',
+                formatter: new L.Routing.Formatter({
+                    language: 'ar',
+                    unit: 'kilometer'
+                })
+            }).addTo(map);
+            
+            routingControl.on('routesfound', function(e) {
+                const routes = e.routes;
+                if (routes && routes.length > 0) {
+                    const route = routes[0];
+                    const distance = (route.summary.totalDistance / 1000).toFixed(2);
+                    const time = Math.round(route.summary.totalTime / 60);
+                    
+                    // عرض المعلومات في النافذة المنبثقة
+                    document.getElementById('route-distance').textContent = `المسافة: ${distance} كيلومتر`;
+                    document.getElementById('route-time').textContent = `الوقت المقدر: ${time} دقيقة`;
+                    document.getElementById('route-info').style.display = 'block';
+                    
+                    // إنشاء نافذة منبثقة في منتصف المسار
+                    const midPoint = route.coordinates[Math.floor(route.coordinates.length / 2)];
+                    if (routeInfoPopup) {
+                        map.removeLayer(routeInfoPopup);
+                    }
+                    
+                    routeInfoPopup = L.popup({ autoClose: false, closeOnClick: false })
+                        .setLatLng([midPoint.lat, midPoint.lng])
+                        .setContent(`
+                            <div class="custom-popup">
+                                <h4>معلومات المسار</h4>
+                                <p>المسافة: ${distance} كم</p>
+                                <p>الوقت: ${time} دقيقة</p>
+                            </div>
+                        `)
+                        .openOn(map);
+                }
+            });
+            
+            routingControl.on('routingerror', function(e) {
+                alert('حدث خطأ في حساب المسار: ' + e.error.message);
+            });
+        }
+
+        // دالة مسح المسار
+        function clearRoute() {
+            if (routingControl) {
+                map.removeControl(routingControl);
+                routingControl = null;
+            }
+            document.getElementById('route-info').style.display = 'none';
+            if (routeInfoPopup) {
+                map.removeLayer(routeInfoPopup);
+                routeInfoPopup = null;
+            }
+        }
+    </script>
+</body>
+</html>
